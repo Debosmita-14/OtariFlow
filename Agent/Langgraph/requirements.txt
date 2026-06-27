@@ -1,0 +1,4 @@
+# Core dependencies for OtariFlow
+# The server uses Python's built-in http.server — no FastAPI/uvicorn needed.
+
+requests>=2.32.0      # optional: use for real LLM API calls in service.py
