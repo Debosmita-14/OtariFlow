@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from . import store
 from .config import settings
 from .service import process_prompt
+from .agent_modes import list_modes
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -45,6 +46,19 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/models":
             models = settings.model_catalog()
             return self._write_json(models)
+        if parsed.path == "/api/modes":
+            return self._write_json(list_modes())
+        if parsed.path == "/api/sessions":
+            limit = int(parse_qs(parsed.query).get("limit", ["50"])[0])
+            return self._write_json(store.get_sessions(limit=limit))
+        if parsed.path == "/api/session/history":
+            qs = parse_qs(parsed.query)
+            session_id = qs.get("session_id", [""])[0]
+            if not session_id:
+                self.send_error(HTTPStatus.BAD_REQUEST, "session_id required")
+                return
+            limit = int(qs.get("limit", ["100"])[0])
+            return self._write_json(store.get_session_requests(session_id, limit=limit))
         return super().do_GET()
 
     def do_POST(self):
@@ -58,12 +72,63 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
             if not prompt:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Prompt cannot be empty")
                 return
-            result = process_prompt(prompt, str(payload.get("session_id", "default")))
+            result = process_prompt(
+                prompt,
+                session_id=str(payload.get("session_id", "default")),
+                agent_mode=str(payload.get("agent_mode", "general")),
+            )
             return self._write_json(result)
 
         if parsed.path == "/api/budget/reset":
             new_total = float(payload.get("new_total", settings.total_budget))
             return self._write_json(store.reset_budget(new_total))
+
+        if parsed.path == "/api/tts":
+            text = str(payload.get("text", "")).strip()
+            voice_id = str(payload.get("voice_id", "diya"))
+            if not text:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Text cannot be empty")
+                return
+
+            smallest_key = os.getenv("SMALLEST_API_KEY", "sk_05d841d5888b9b49a07aa53080088c72").lstrip(".")
+            if not smallest_key:
+                return self._write_json({
+                    "status": "fallback",
+                    "provider": "WebSpeechAPI",
+                    "text": text,
+                    "message": "SMALLEST_API_KEY not set. Using crisp browser TTS."
+                })
+
+            try:
+                import requests
+                import base64
+                resp = requests.post(
+                    "https://waves-api.smallest.ai/api/v1/lightning/get_speech",
+                    headers={"Authorization": f"Bearer {smallest_key}", "Content-Type": "application/json"},
+                    json={"text": text, "voice_id": voice_id, "speed": 1.0, "sample_rate": 24000},
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    return self._write_json({
+                        "status": "success",
+                        "provider": "smallest.ai",
+                        "audio_base64": audio_b64
+                    })
+                else:
+                    return self._write_json({
+                        "status": "fallback",
+                        "provider": "WebSpeechAPI",
+                        "text": text,
+                        "message": f"Smallest AI API returned {resp.status_code}. Using browser TTS."
+                    })
+            except Exception as e:
+                return self._write_json({
+                    "status": "fallback",
+                    "provider": "WebSpeechAPI",
+                    "text": text,
+                    "message": f"Smallest AI error: {str(e)}. Using browser TTS."
+                })
 
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
 
