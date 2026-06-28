@@ -9,6 +9,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import time
+import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -16,8 +18,17 @@ from .complexity import analyse as analyse_complexity
 from .config import settings
 from .router import route
 from .security import analyse as analyse_security
+from .agent_modes import get_mode, DEFAULT_MODE
+from .llm_client import call_llm, LLMResult
 from . import store
 from cache import faiss_store as cache_store
+
+logger = logging.getLogger("otariflow.service")
+
+# ---------------------------------------------------------------------------
+# Model upgrade order for latency watchdog (Feature 4)
+# ---------------------------------------------------------------------------
+UPGRADE_ORDER = ["otari-lite-turbo", "gemma-7b", "grok-3-mini", "mixtral-8x7b", "llama-3-70b", "otari-neural-code", "gpt-4o", "grok-3-pro", "otari-flagship-ultra", "claude-3-7-sonnet"]
 
 
 def _timeline(state: Dict[str, Any], status: str, detail: str) -> List[Dict[str, str]]:
@@ -38,39 +49,150 @@ def _default_model_id() -> str:
     return min(catalog, key=lambda item: item["input_cost"] + item["output_cost"])["model_id"]
 
 
-def _build_response(prompt: str, model_id: str, complexity_level: str, model_label: str) -> str:
-    """
-    Build a simulated response for the selected model.
-    Replace this body with a real API call when you have credentials.
+def _next_tier_model(current_model_id: str) -> str | None:
+    """Return the next model up in the upgrade chain, or None if already at top."""
+    try:
+        idx = UPGRADE_ORDER.index(current_model_id)
+    except ValueError:
+        return None
+    if idx + 1 < len(UPGRADE_ORDER):
+        return UPGRADE_ORDER[idx + 1]
+    return None
 
-    Example real call (Groq/OpenRouter/etc.):
-        import httpx
-        r = httpx.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"},
-            json={"model": model_id, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        return r.json()["choices"][0]["message"]["content"]
-    """
+
+def _latency_threshold(model_id: str) -> float:
+    """Return the latency watchdog threshold for a model (2× its avg_latency_ms)."""
     profile = settings.model_profile(model_id)
-    tier = profile["tier"]
+    return profile["avg_latency_ms"] * 2.0
 
-    if tier == "economy":
-        return (
-            f"[{model_label}] Simple request handled.\n\n"
-            f"Prompt summary: {prompt.strip()[:220]}"
+
+def _do_llm_call(
+    model_id: str,
+    model_label: str,
+    prompt: str,
+    system_prompt: str,
+    state: Dict[str, Any],
+    remaining_budget: float,
+    est_total_tokens: int,
+) -> Dict[str, Any]:
+    """Execute the real LLM call with latency watchdog and automatic model upgrade.
+
+    Returns a dict with keys: response, actual_tokens, actual_cost, latency_ms,
+    prompt_tokens, completion_tokens, total_tokens, escalation_history, extra_timeline.
+    """
+    escalation_history: List[Dict[str, Any]] = []
+    extra_timeline: List[Dict[str, str]] = []
+    current_model_id = model_id
+    current_label = model_label
+    timeout_ms = settings.model_timeout_ms
+
+    # Show estimated cost for the initially selected model
+    estimated_cost = _cost_for_model(current_model_id, est_total_tokens)
+    extra_timeline.append({
+        "status": "Estimated cost",
+        "detail": f"{current_label}: ${estimated_cost:.6f}",
+    })
+
+    while True:
+        # Use a generous timeout so we don't time out on slow free APIs
+        call_timeout = max(timeout_ms, 25_000)
+        result: LLMResult = call_llm(
+            model_id=current_model_id,
+            user_prompt=prompt,
+            system_prompt=system_prompt,
+            timeout_ms=call_timeout,
         )
-    return (
-        f"[{model_label}] Complex request handled.\n\n"
-        f"Complexity tier: {complexity_level}.\n"
-        f"Analysis: I reviewed the task and selected the best-fit model for this query.\n"
-        f"Prompt focus: {prompt.strip()[:220]}"
-    )
+
+        # On success — return immediately, skip latency escalation
+        # (escalation causes rapid sequential calls that trip rate limits)
+        if result.success:
+            # Use real token counts from provider, fall back to estimates
+            actual_tokens = result.total_tokens if result.total_tokens > 0 else max(1, int(est_total_tokens * 0.9))
+            actual_cost = _cost_for_model(current_model_id, actual_tokens) if result.total_tokens > 0 else round(estimated_cost * 1.05, 6)
+
+            return {
+                "response": result.content,
+                "actual_tokens": actual_tokens,
+                "actual_cost": actual_cost,
+                "latency_ms": result.latency_ms,
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
+                "total_tokens": result.total_tokens,
+                "escalation_history": escalation_history,
+                "extra_timeline": extra_timeline,
+                "selected_model": current_model_id,
+                "selected_label": current_label,
+                "estimated_cost": estimated_cost,
+                "success": True,
+            }
+
+        # Call failed — try upgrade (with delay to avoid rate limiting)
+        import time as _time
+        _time.sleep(1.0)
+
+        next_model = _next_tier_model(current_model_id)
+        if next_model:
+            next_profile = settings.model_profile(next_model)
+            next_cost = _cost_for_model(next_model, est_total_tokens)
+
+            if next_cost <= remaining_budget:
+                escalation_entry = {
+                    "from_model": current_label,
+                    "to_model": next_profile["label"],
+                    "reason": f"Call failed on {current_label}: {result.error}",
+                    "estimated_cost": next_cost,
+                }
+                escalation_history.append(escalation_entry)
+                extra_timeline.append({
+                    "status": "Model upgraded",
+                    "detail": (
+                        f"{current_label} failed ({result.error[:80]}) "
+                        f"— escalating to {next_profile['label']} (est. cost ${next_cost:.5f})"
+                    ),
+                })
+
+                current_model_id = next_model
+                current_label = next_profile["label"]
+                estimated_cost = next_cost
+
+                extra_timeline.append({
+                    "status": "Updated estimated cost",
+                    "detail": f"{current_label}: ${estimated_cost:.6f}",
+                })
+                continue
+
+        # No more upgrades available — return error
+        return {
+            "response": "Sorry, I couldn't process your request right now. Please try again in a moment.",
+            "actual_tokens": 0,
+            "actual_cost": 0.0,
+            "latency_ms": result.latency_ms,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "escalation_history": escalation_history,
+            "extra_timeline": extra_timeline,
+            "selected_model": current_model_id,
+            "selected_label": current_label,
+            "estimated_cost": estimated_cost,
+            "success": False,
+        }
 
 
-def process_prompt(prompt: str, session_id: str = "default") -> Dict[str, Any]:
-    state: Dict[str, Any] = {"prompt": prompt, "session_id": session_id, "timeline": [], "blocked": False}
+def process_prompt(
+    prompt: str,
+    session_id: str = "default",
+    user_id: str = "default",
+    agent_mode: str = DEFAULT_MODE,
+) -> Dict[str, Any]:
+    state: Dict[str, Any] = {
+        "prompt": prompt,
+        "session_id": session_id,
+        "user_id": user_id,
+        "agent_mode": agent_mode,
+        "timeline": [],
+        "blocked": False,
+    }
 
     # --- Security check ---
     security = analyse_security(prompt)
@@ -181,48 +303,81 @@ def process_prompt(prompt: str, session_id: str = "default") -> Dict[str, Any]:
         )
         return _finalize(state)
 
-    # --- Generate response ---
-    start = time.time()
-    response = _build_response(prompt, route_result.selected_model, complexity.level, route_result.selected_label)
-    latency_ms = round(
-        (time.time() - start) * 1000 + settings.model_profile(route_result.selected_model)["avg_latency_ms"],
-        1,
+    # --- Get system prompt from agent mode ---
+    mode_config = get_mode(agent_mode)
+    system_prompt = mode_config.get("system_prompt", "")
+    state["timeline"] = _timeline(
+        state, "Agent mode applied", f"{mode_config.get('label', agent_mode)}"
     )
-    actual_tokens = max(1, int(state["est_total_tokens"] * 0.9))
-    actual_cost = round(selected_cost * 1.05, 6)
+
+    # --- Generate response (real LLM call with latency watchdog) ---
+    llm_result = _do_llm_call(
+        model_id=route_result.selected_model,
+        model_label=route_result.selected_label,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        state=state,
+        remaining_budget=remaining_budget,
+        est_total_tokens=state["est_total_tokens"],
+    )
+
+    # Apply extra timeline entries from the LLM call
+    for entry in llm_result.get("extra_timeline", []):
+        state["timeline"] = _timeline(state, entry["status"], entry["detail"])
+
+    # Update state with the final model (may have been upgraded)
+    final_model_id = llm_result["selected_model"]
+    final_label = llm_result["selected_label"]
 
     state.update(
         {
-            "response": response,
-            "actual_tokens": actual_tokens,
-            "actual_cost": actual_cost,
-            "latency_ms": latency_ms,
+            "response": llm_result["response"],
+            "actual_tokens": llm_result["actual_tokens"],
+            "actual_cost": llm_result["actual_cost"],
+            "latency_ms": llm_result["latency_ms"],
+            "prompt_tokens": llm_result.get("prompt_tokens", 0),
+            "completion_tokens": llm_result.get("completion_tokens", 0),
+            "total_tokens": llm_result.get("total_tokens", 0),
+            "escalation_history": llm_result.get("escalation_history", []),
+            "estimated_cost": llm_result.get("estimated_cost", selected_cost),
+            "selected_model": final_model_id,
+            "selected_label": final_label,
             "timeline": _timeline(
                 state,
                 "Response generated",
-                f"{actual_tokens} tokens | ${actual_cost:.5f} | {latency_ms:.0f}ms",
+                f"{llm_result['actual_tokens']} tokens | ${llm_result['actual_cost']:.5f} | {llm_result['latency_ms']:.0f}ms",
             ),
         }
     )
 
-    store.deduct_budget(actual_cost)
-    store.update_model_metrics(
-        route_result.selected_label, actual_cost, actual_tokens, latency_ms, route_result.confidence
-    )
-    cache_store.add(
-        prompt=prompt,
-        response=response,
-        model_id=route_result.selected_model,
-        model_label=route_result.selected_label,
-        similarity=1.0,
-        cost_saved=max(0.0, selected_cost - actual_cost),
-    )
+    # Only deduct budget and update metrics on successful calls
+    if llm_result.get("success", True) and llm_result["actual_cost"] > 0:
+        store.deduct_budget(llm_result["actual_cost"])
+        store.update_model_metrics(
+            final_label,
+            llm_result["actual_cost"],
+            llm_result["actual_tokens"],
+            llm_result["latency_ms"],
+            state.get("confidence", route_result.confidence),
+        )
+        cache_store.add(
+            prompt=prompt,
+            response=llm_result["response"],
+            model_id=final_model_id,
+            model_label=final_label,
+            similarity=1.0,
+            cost_saved=max(0.0, selected_cost - llm_result["actual_cost"]),
+        )
+
     return _finalize(state)
 
 
 def _finalize(state: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = state.get("prompt", "")
+    prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+
     payload = {
-        "prompt": state.get("prompt", ""),
+        "prompt": prompt,
         "response": state.get("response"),
         "risk_score": state.get("risk_score", 0.0),
         "complexity": state.get("complexity_level", "low"),
@@ -246,6 +401,22 @@ def _finalize(state: Dict[str, Any]) -> Dict[str, Any]:
         "latency_ms": state.get("latency_ms", 0.0),
         "blocked": state.get("blocked", False),
         "timeline": state.get("timeline", []),
+        "user_id": state.get("user_id", "default"),
+        "session_id": state.get("session_id", "default"),
+        "prompt_hash": prompt_hash,
+        "selected_tier": state.get("selected_tier", "low"),
+        "execution_time_ms": state.get("latency_ms", 0.0),
+        "security_result": state.get("security_reason", ""),
+        "escalation_history": state.get("escalation_history", []),
+        "quality_score": 0.0,
+        "quality_label": "unknown",
+        "verification_status": "pending",
+        "verification_notes": [],
+        "self_eval": {},
+        "agent_mode": state.get("agent_mode", DEFAULT_MODE),
+        "prompt_tokens": state.get("prompt_tokens", 0),
+        "completion_tokens": state.get("completion_tokens", 0),
+        "total_tokens": state.get("total_tokens", 0),
     }
     payload["request_id"] = store.create_request(payload)
     payload["budget"] = store.get_budget()

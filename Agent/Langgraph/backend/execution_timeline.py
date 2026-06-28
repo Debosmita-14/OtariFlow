@@ -142,7 +142,8 @@ class ErrorRecoveryStrategy:
         critical_errors = {
             "auth_failed", "invalid_key", "quota_exceeded",
             "service_down", "malicious_request"
-        }\n        high_errors = {
+        }
+        high_errors = {
             "timeout", "rate_limit", "model_unavailable"
         }
         
