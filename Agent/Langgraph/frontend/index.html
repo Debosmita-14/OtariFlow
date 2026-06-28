@@ -3,12 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OtariFlow</title>
+    <meta name="description" content="OtariFlow — Cost-aware AI routing with transparent model selection, real-time budget tracking, and intelligent auto-escalation." />
+    <title>OtariFlow — Intelligent AI Router</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="shell">
-      <aside class="sidebar">
+    <div class="shell" id="app-shell">
+      <!-- ─── SIDEBAR ─── -->
+      <aside class="sidebar" id="sidebar">
         <div class="brand">
           <div class="brand-mark">⚡</div>
           <div>
@@ -17,96 +22,87 @@
           </div>
         </div>
 
+        <button id="new-chat-btn" class="new-chat-btn">
+          <span class="btn-icon">＋</span> New Chat
+        </button>
+
         <div class="panel budget-panel">
           <div class="panel-title">Budget</div>
           <div id="budget-value" class="big-number">$0.00</div>
           <div id="budget-meta" class="muted">Loading...</div>
           <div class="meter"><div id="budget-fill" class="meter-fill"></div></div>
+          <button id="reset-btn" class="ghost small-btn" style="margin-top:10px;width:100%">Reset Budget</button>
+        </div>
+
+        <div class="panel session-panel">
+          <div class="panel-title">Chat History</div>
+          <div id="session-list" class="session-list">
+            <div class="muted">No chats yet.</div>
+          </div>
         </div>
 
         <div class="panel">
-          <div class="panel-title">Flow</div>
+          <div class="panel-title">Flow Pipeline</div>
           <ol class="flow-list">
             <li>User input</li>
             <li>Safety filter</li>
             <li>Complexity classifier</li>
-            <li>Small or large model</li>
+            <li>Smart model routing</li>
             <li>Budget check</li>
-            <li>Response card</li>
+            <li>Real LLM call</li>
+            <li>Latency watchdog</li>
           </ol>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title">Model Keys</div>
-          <div class="kv"><span>SMALL_MODEL_KEY</span><strong>used</strong></div>
-          <div class="kv"><span>LARGE_MODEL_KEY</span><strong>used</strong></div>
-          <div class="kv"><span>ANTHROPIC_API_KEY</span><strong>removed</strong></div>
         </div>
       </aside>
 
-      <main class="content">
-        <header class="hero">
-          <div>
-            <p class="eyebrow">User → Filter → Classifier → Model → Budget → Response</p>
-            <h1>Route each prompt to the right model, then show exactly why.</h1>
-            <p class="lede">
-              Simple prompts go to the small model. Complex prompts go to the large model. Unsafe prompts are blocked before generation.
-            </p>
-          </div>
-          <div class="hero-card">
-            <div class="hero-card-label">Current status</div>
-            <div id="status-pill" class="status-pill neutral">Ready</div>
-            <div class="hero-card-note">Cost-aware demo running locally.</div>
-          </div>
-        </header>
+      <!-- ─── MAIN CONTENT ─── -->
+      <main class="content" id="main-content">
 
-        <section class="panel prompt-panel">
-          <div class="panel-title">Prompt</div>
-          <textarea id="prompt-input" placeholder="Try: what's 2+2? or debug this React code and explain the fix"></textarea>
-          <div class="actions">
-            <button id="run-btn">Generate</button>
-            <button id="reset-btn" class="ghost">Reset Budget</button>
+        <!-- ─── MODE PICKER (shown before chat starts) ─── -->
+        <section id="mode-picker" class="mode-picker">
+          <div class="mode-picker-header">
+            <h1>How can I help you today?</h1>
+            <p class="lede">Choose a mode to start a new conversation. Each mode shapes the AI's expertise and response style.</p>
+          </div>
+          <div id="mode-cards" class="mode-cards">
+            <!-- filled by JS -->
           </div>
         </section>
 
-        <section class="grid metrics-grid">
-          <article class="card"><span>Risk Score</span><strong id="risk-score">0.00</strong><small id="risk-label">Safe</small></article>
-          <article class="card"><span>Complexity</span><strong id="complexity-level">Low</strong><small id="complexity-score">0.00</small></article>
-          <article class="card"><span>Model</span><strong id="selected-model">-</strong><small id="routing-confidence">Confidence 0%</small></article>
-          <article class="card"><span>Estimated Cost</span><strong id="estimated-cost">$0.00000</strong><small id="actual-cost">Actual $0.00000</small></article>
-          <article class="card"><span>Tokens</span><strong id="tokens">0</strong><small id="latency">0 ms</small></article>
-          <article class="card"><span>State</span><strong id="request-state">Idle</strong><small id="selected-label">Waiting</small></article>
-        </section>
-
-        <section class="two-col">
-          <div class="panel">
-            <div class="panel-title">Response</div>
-            <div id="response-box" class="response-box muted">No response yet.</div>
-            <div id="blocked-box" class="blocked-box hidden"></div>
-            <div id="why-not-box" class="why-not-box"></div>
+        <!-- ─── CHAT VIEW (hidden until mode is picked) ─── -->
+        <section id="chat-view" class="chat-view hidden">
+          <!-- Mode pill at top -->
+          <div class="chat-header">
+            <div id="mode-pill" class="mode-pill" title="Click to switch mode / new chat">
+              <span id="mode-pill-icon">💬</span>
+              <span id="mode-pill-label">General Chat</span>
+              <span class="mode-pill-change">▾</span>
+            </div>
+            <div class="chat-status">
+              <button id="voice-toggle-btn" class="voice-toggle-btn active" title="Toggle Auto-Voice Output (Smallest.ai)">
+                <span id="voice-toggle-icon">🔊</span> Voice: ON
+              </button>
+              <div id="status-pill" class="status-pill neutral">Ready</div>
+            </div>
           </div>
 
-          <div class="panel">
-            <div class="panel-title">Decision Timeline</div>
-            <div id="timeline" class="timeline"></div>
+          <!-- Scrolling message thread -->
+          <div id="chat-thread" class="chat-thread">
+            <!-- messages rendered by JS -->
+          </div>
+
+          <!-- Input bar -->
+          <div class="chat-input-bar">
+            <button id="mic-btn" class="mic-btn" title="Click to Speak (Speech-to-Text)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+            </button>
+            <textarea id="prompt-input" placeholder="Type or click the mic to speak..." rows="1"></textarea>
+            <button id="send-btn" class="send-btn" title="Send (Ctrl+Enter)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
           </div>
         </section>
 
-        <section class="panel">
-          <div class="panel-title">History</div>
-          <div id="history-table" class="table-wrap"></div>
-        </section>
-
-        <section class="two-col">
-          <div class="panel">
-            <div class="panel-title">Security Log</div>
-            <div id="attacks-list" class="list"></div>
-          </div>
-          <div class="panel">
-            <div class="panel-title">Models</div>
-            <div id="models-list" class="list"></div>
-          </div>
-        </section>
       </main>
     </div>
 
