@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from . import store
 from .config import settings
 from .service import process_prompt
+from .agent_modes import list_modes
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -45,6 +46,19 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/models":
             models = settings.model_catalog()
             return self._write_json(models)
+        if parsed.path == "/api/modes":
+            return self._write_json(list_modes())
+        if parsed.path == "/api/sessions":
+            limit = int(parse_qs(parsed.query).get("limit", ["50"])[0])
+            return self._write_json(store.get_sessions(limit=limit))
+        if parsed.path == "/api/session/history":
+            qs = parse_qs(parsed.query)
+            session_id = qs.get("session_id", [""])[0]
+            if not session_id:
+                self.send_error(HTTPStatus.BAD_REQUEST, "session_id required")
+                return
+            limit = int(qs.get("limit", ["100"])[0])
+            return self._write_json(store.get_session_requests(session_id, limit=limit))
         return super().do_GET()
 
     def do_POST(self):
@@ -58,7 +72,11 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
             if not prompt:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Prompt cannot be empty")
                 return
-            result = process_prompt(prompt, str(payload.get("session_id", "default")))
+            result = process_prompt(
+                prompt,
+                session_id=str(payload.get("session_id", "default")),
+                agent_mode=str(payload.get("agent_mode", "general")),
+            )
             return self._write_json(result)
 
         if parsed.path == "/api/budget/reset":
@@ -76,6 +94,8 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
         self.wfile.write(raw)
 
 
-def create_server(host: str = "127.0.0.1", port: int | None = None) -> ThreadingHTTPServer:
+def create_server(host: str = "0.0.0.0", port: int | None = None) -> ThreadingHTTPServer:
     store.init_db()
-    return ThreadingHTTPServer((host, port or settings.backend_port), OtariFlowHandler)
+    # Render injects PORT env var; fall back to settings.backend_port for local dev.
+    effective_port = port or int(os.environ.get("PORT", settings.backend_port))
+    return ThreadingHTTPServer((host, effective_port), OtariFlowHandler)

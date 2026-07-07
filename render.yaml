@@ -1,0 +1,25 @@
+# Render Blueprint — Infrastructure as Code
+# https://docs.render.com/blueprint-spec
+
+services:
+  - type: web
+    name: otariflow
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: Agent/Langgraph
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: XAI_API_KEY
+        sync: false          # Render will prompt you to fill this in
+      - key: TOTAL_BUDGET
+        value: "5.00"
+      - key: BUDGET_WARNING_THRESHOLD
+        value: "0.80"
+      - key: RISK_BLOCK_THRESHOLD
+        value: "0.75"
+      - key: MODEL_TIMEOUT_MS
+        value: "9000"

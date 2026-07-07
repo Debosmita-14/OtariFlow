@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 build/
@@ -52,3 +53,7 @@ Thumbs.db
 # FAISS indices
 *.faiss
 *.pkl
+
+# Local launch scripts (may contain API keys)
+start.bat
+start.sh

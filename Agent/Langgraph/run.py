@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import webbrowser
 from time import sleep
@@ -21,11 +22,13 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    sleep(0.7)
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    # Don't try to open a browser on Render (or any headless environment)
+    if not os.environ.get("RENDER"):
+        sleep(0.7)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     try:
         thread.join()
@@ -36,3 +39,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
