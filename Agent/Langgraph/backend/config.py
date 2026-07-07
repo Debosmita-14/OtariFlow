@@ -49,6 +49,15 @@ class Settings:
     db_path = os.getenv("OTARIFLOW_DB", os.path.join(os.path.dirname(__file__), "..", "otariflow.sqlite3"))
 
     models = {
+        "otari-lite-turbo": {
+            "name": "Otari Lite Turbo",
+            "provider": "Otari",
+            "cost_per_1k": 0.00005,
+            "latency_avg": 0.4,
+            "context_window": 16384,
+            "strengths": ["instant response", "energy efficient", "native routing"],
+            "tier": "economy",
+        },
         "gemma-7b": {
             "name": "Gemma 7B",
             "provider": "Google",
@@ -58,13 +67,13 @@ class Settings:
             "strengths": ["ultra-fast", "ultra-cheap", "simple"],
             "tier": "economy",
         },
-        "llama-3-70b": {
-            "name": "Llama 3 70B",
-            "provider": "Meta",
-            "cost_per_1k": 0.00059,
-            "latency_avg": 1.6,
-            "context_window": 8192,
-            "strengths": ["open-source", "reasoning", "code"],
+        "grok-3-mini": {
+            "name": "Grok 3 Mini",
+            "provider": "xAI",
+            "cost_per_1k": 0.00035,
+            "latency_avg": 0.8,
+            "context_window": 32768,
+            "strengths": ["rapid reasoning", "knowledge retrieval", "code"],
             "tier": "balanced",
         },
         "mixtral-8x7b": {
@@ -75,6 +84,60 @@ class Settings:
             "context_window": 32768,
             "strengths": ["multilingual", "fast", "balanced"],
             "tier": "balanced",
+        },
+        "llama-3-70b": {
+            "name": "Llama 3 70B",
+            "provider": "Meta",
+            "cost_per_1k": 0.00059,
+            "latency_avg": 1.6,
+            "context_window": 8192,
+            "strengths": ["open-source", "reasoning", "code"],
+            "tier": "balanced",
+        },
+        "otari-neural-code": {
+            "name": "Otari Neural Code",
+            "provider": "Otari",
+            "cost_per_1k": 0.00085,
+            "latency_avg": 1.2,
+            "context_window": 65536,
+            "strengths": ["advanced software engineering", "polyglot execution", "debugging"],
+            "tier": "premium",
+        },
+        "gpt-4o": {
+            "name": "GPT-4o",
+            "provider": "OpenAI",
+            "cost_per_1k": 0.00095,
+            "latency_avg": 1.3,
+            "context_window": 128000,
+            "strengths": ["omni-capabilities", "multimodal", "fast premium"],
+            "tier": "premium",
+        },
+        "otari-flagship-ultra": {
+            "name": "Otari Flagship Ultra",
+            "provider": "Otari",
+            "cost_per_1k": 0.00110,
+            "latency_avg": 1.5,
+            "context_window": 128000,
+            "strengths": ["deep domain expertise", "native otari integration", "autonomous planning"],
+            "tier": "premium",
+        },
+        "grok-3-pro": {
+            "name": "Grok 3 Pro",
+            "provider": "xAI",
+            "cost_per_1k": 0.00120,
+            "latency_avg": 1.7,
+            "context_window": 128000,
+            "strengths": ["advanced reasoning", "humor", "unfiltered real-time"],
+            "tier": "premium",
+        },
+        "claude-3-7-sonnet": {
+            "name": "Claude 3.7 Sonnet",
+            "provider": "Anthropic",
+            "cost_per_1k": 0.00150,
+            "latency_avg": 2.1,
+            "context_window": 200000,
+            "strengths": ["expert coding", "hybrid reasoning", "superb logic"],
+            "tier": "premium",
         },
     }
 

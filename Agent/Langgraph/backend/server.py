@@ -83,6 +83,53 @@ class OtariFlowHandler(SimpleHTTPRequestHandler):
             new_total = float(payload.get("new_total", settings.total_budget))
             return self._write_json(store.reset_budget(new_total))
 
+        if parsed.path == "/api/tts":
+            text = str(payload.get("text", "")).strip()
+            voice_id = str(payload.get("voice_id", "diya"))
+            if not text:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Text cannot be empty")
+                return
+
+            smallest_key = os.getenv("SMALLEST_API_KEY", "sk_05d841d5888b9b49a07aa53080088c72").lstrip(".")
+            if not smallest_key:
+                return self._write_json({
+                    "status": "fallback",
+                    "provider": "WebSpeechAPI",
+                    "text": text,
+                    "message": "SMALLEST_API_KEY not set. Using crisp browser TTS."
+                })
+
+            try:
+                import requests
+                import base64
+                resp = requests.post(
+                    "https://waves-api.smallest.ai/api/v1/lightning/get_speech",
+                    headers={"Authorization": f"Bearer {smallest_key}", "Content-Type": "application/json"},
+                    json={"text": text, "voice_id": voice_id, "speed": 1.0, "sample_rate": 24000},
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    return self._write_json({
+                        "status": "success",
+                        "provider": "smallest.ai",
+                        "audio_base64": audio_b64
+                    })
+                else:
+                    return self._write_json({
+                        "status": "fallback",
+                        "provider": "WebSpeechAPI",
+                        "text": text,
+                        "message": f"Smallest AI API returned {resp.status_code}. Using browser TTS."
+                    })
+            except Exception as e:
+                return self._write_json({
+                    "status": "fallback",
+                    "provider": "WebSpeechAPI",
+                    "text": text,
+                    "message": f"Smallest AI error: {str(e)}. Using browser TTS."
+                })
+
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
 
     def _write_json(self, data):

@@ -131,12 +131,14 @@ def init_db() -> None:
             ("requests", "verification_notes", "TEXT"),
             ("requests", "self_eval", "TEXT"),
             ("requests", "prompt_hash", "TEXT"),
+            ("requests", "agent_mode", "TEXT DEFAULT 'general'"),
             ("blocked_attacks", "user_id", "TEXT"),
             ("blocked_attacks", "session_id", "TEXT"),
             ("blocked_attacks", "prompt_hash", "TEXT"),
             ("blocked_attacks", "attack_type", "TEXT"),
             ("blocked_attacks", "severity", "TEXT"),
             ("blocked_attacks", "safe_rewrite", "TEXT"),
+            ("session_memory", "agent_mode", "TEXT DEFAULT 'general'"),
         ]:
             _ensure_column(conn, table, column, ddl)
 
@@ -205,6 +207,7 @@ def create_request(data: Dict[str, Any]) -> int:
     payload["completion_tokens"] = int(payload.get("completion_tokens", 0))
     payload["total_tokens"] = int(payload.get("total_tokens", 0))
     payload["timestamp"] = datetime.utcnow().isoformat()
+    payload.setdefault("agent_mode", "general")
 
     with _connect() as conn:
         cursor = conn.execute(
@@ -215,7 +218,8 @@ def create_request(data: Dict[str, Any]) -> int:
                 routing_scores, confidence, routing_reason, latency_ms, cache_hit, blocked, timeline, timestamp,
                 user_id, session_id, prompt_hash, selected_model_id, selected_model_label, selected_tier,
                 prompt_tokens, completion_tokens, total_tokens, execution_time_ms, security_result, escalation_history,
-                quality_score, quality_label, verification_status, verification_notes, self_eval
+                quality_score, quality_label, verification_status, verification_notes, self_eval,
+                agent_mode
             ) VALUES (
                 :prompt, :response, :risk_score, :complexity, :complexity_score, :complexity_tags,
                 :estimated_tokens, :actual_tokens, :estimated_cost, :actual_cost, :selected_model,
@@ -223,6 +227,7 @@ def create_request(data: Dict[str, Any]) -> int:
                 , :user_id, :session_id, :prompt_hash, :selected_model_id, :selected_model_label, :selected_tier
                 , :prompt_tokens, :completion_tokens, :total_tokens, :execution_time_ms, :security_result, :escalation_history
                 , :quality_score, :quality_label, :verification_status, :verification_notes, :self_eval
+                , :agent_mode
             )
             """,
             payload,
@@ -335,13 +340,46 @@ def get_recent_requests(limit: int = 50) -> List[Dict[str, Any]]:
     return [_decode_request(row) for row in rows]
 
 
-def get_session_requests(session_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+def get_session_requests(session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Return requests for a session in ascending order (oldest first) for chat rebuild."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM requests WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM requests WHERE session_id = ? ORDER BY id ASC LIMIT ?",
             (session_id, limit),
         ).fetchall()
     return [_decode_request(row) for row in rows]
+
+
+def get_sessions(limit: int = 50) -> List[Dict[str, Any]]:
+    """Return a list of distinct sessions with metadata for the sidebar."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT session_id,
+                   MIN(prompt) AS first_prompt,
+                   COUNT(*) AS message_count,
+                   MAX(timestamp) AS last_active,
+                   COALESCE(MAX(agent_mode), 'general') AS agent_mode
+            FROM requests
+            WHERE session_id IS NOT NULL AND session_id != ''
+            GROUP BY session_id
+            ORDER BY MAX(id) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    sessions = []
+    for row in rows:
+        first = row["first_prompt"] or ""
+        title = first[:60] + ("..." if len(first) > 60 else "") if first else "New Chat"
+        sessions.append({
+            "session_id": row["session_id"],
+            "title": title,
+            "message_count": row["message_count"],
+            "last_active": row["last_active"],
+            "agent_mode": row["agent_mode"],
+        })
+    return sessions
 
 
 def get_recent_attacks(limit: int = 20) -> List[Dict[str, Any]]:
@@ -446,6 +484,7 @@ def get_health() -> Dict[str, Any]:
 
 
 def _decode_request(row: sqlite3.Row) -> Dict[str, Any]:
+    keys = row.keys()
     return {
         "id": row["id"],
         "prompt": row["prompt"],
@@ -461,8 +500,8 @@ def _decode_request(row: sqlite3.Row) -> Dict[str, Any]:
         "selected_model": row["selected_model"],
         # Alias so the frontend's `selected_model_label` reference resolves correctly
         "selected_model_label": row["selected_model"],
-        "selected_model_id": row["selected_model_id"] if "selected_model_id" in row.keys() else row["selected_model"],
-        "selected_tier": row["selected_tier"] if "selected_tier" in row.keys() else "",
+        "selected_model_id": row["selected_model_id"] if "selected_model_id" in keys else row["selected_model"],
+        "selected_tier": row["selected_tier"] if "selected_tier" in keys else "",
         "routing_scores": json.loads(row["routing_scores"]),
         "confidence": row["confidence"],
         "routing_reason": row["routing_reason"],
@@ -470,20 +509,21 @@ def _decode_request(row: sqlite3.Row) -> Dict[str, Any]:
         "cache_hit": bool(row["cache_hit"]),
         "blocked": bool(row["blocked"]),
         "timeline": json.loads(row["timeline"]),
-        "user_id": row["user_id"] if "user_id" in row.keys() else "anonymous",
-        "session_id": row["session_id"] if "session_id" in row.keys() else "default",
-        "prompt_hash": row["prompt_hash"] if "prompt_hash" in row.keys() else "",
-        "security_result": row["security_result"] if "security_result" in row.keys() else "",
-        "escalation_history": json.loads(row["escalation_history"]) if "escalation_history" in row.keys() and row["escalation_history"] else [],
-        "prompt_tokens": row["prompt_tokens"] if "prompt_tokens" in row.keys() else 0,
-        "completion_tokens": row["completion_tokens"] if "completion_tokens" in row.keys() else 0,
-        "total_tokens": row["total_tokens"] if "total_tokens" in row.keys() else row["actual_tokens"],
-        "execution_time_ms": row["execution_time_ms"] if "execution_time_ms" in row.keys() else row["latency_ms"],
-        "quality_score": row["quality_score"] if "quality_score" in row.keys() else 0,
-        "quality_label": row["quality_label"] if "quality_label" in row.keys() else "",
-        "verification_status": row["verification_status"] if "verification_status" in row.keys() else "",
-        "verification_notes": json.loads(row["verification_notes"]) if "verification_notes" in row.keys() and row["verification_notes"] else [],
-        "self_eval": json.loads(row["self_eval"]) if "self_eval" in row.keys() and row["self_eval"] else {},
+        "user_id": row["user_id"] if "user_id" in keys else "anonymous",
+        "session_id": row["session_id"] if "session_id" in keys else "default",
+        "prompt_hash": row["prompt_hash"] if "prompt_hash" in keys else "",
+        "security_result": row["security_result"] if "security_result" in keys else "",
+        "escalation_history": json.loads(row["escalation_history"]) if "escalation_history" in keys and row["escalation_history"] else [],
+        "prompt_tokens": row["prompt_tokens"] if "prompt_tokens" in keys else 0,
+        "completion_tokens": row["completion_tokens"] if "completion_tokens" in keys else 0,
+        "total_tokens": row["total_tokens"] if "total_tokens" in keys else row["actual_tokens"],
+        "execution_time_ms": row["execution_time_ms"] if "execution_time_ms" in keys else row["latency_ms"],
+        "quality_score": row["quality_score"] if "quality_score" in keys else 0,
+        "quality_label": row["quality_label"] if "quality_label" in keys else "",
+        "verification_status": row["verification_status"] if "verification_status" in keys else "",
+        "verification_notes": json.loads(row["verification_notes"]) if "verification_notes" in keys and row["verification_notes"] else [],
+        "self_eval": json.loads(row["self_eval"]) if "self_eval" in keys and row["self_eval"] else {},
+        "agent_mode": row["agent_mode"] if "agent_mode" in keys else "general",
         "timestamp": row["timestamp"],
     }
 

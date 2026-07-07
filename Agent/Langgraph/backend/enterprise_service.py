@@ -30,9 +30,9 @@ from .enterprise_logging import SmartCache, NotificationCenter, EnterpriseLogger
 @dataclass
 class EnterpriseResponse:
     """Complete response from enterprise service."""
-    # Core response
-    response: str
-    is_safe: bool
+    # Core response (with defaults)
+    response: str = ""
+    is_safe: bool = True
     blocked: bool = False
     
     # Security

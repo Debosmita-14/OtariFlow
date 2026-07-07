@@ -55,14 +55,25 @@ def _model_cost_score(profile: dict) -> float:
 def _preferred_models(complexity: ComplexityResult) -> List[str]:
     tags = set(complexity.tags)
     if complexity.level == "high" or {"code", "research", "document"} & tags:
-        return ["llama-3-70b", "mixtral-8x7b", "gemma-7b"]
+        return ["otari-flagship-ultra", "otari-neural-code", "grok-3-pro", "claude-3-7-sonnet", "gpt-4o", "llama-3-70b", "grok-3-mini", "mixtral-8x7b", "gemma-7b", "otari-lite-turbo"]
     if {"math", "json_structured", "long_context"} & tags:
-        return ["mixtral-8x7b", "llama-3-70b", "gemma-7b"]
-    return ["gemma-7b", "mixtral-8x7b", "llama-3-70b"]
+        return ["otari-neural-code", "otari-flagship-ultra", "claude-3-7-sonnet", "gpt-4o", "grok-3-pro", "mixtral-8x7b", "grok-3-mini", "llama-3-70b", "gemma-7b", "otari-lite-turbo"]
+    return ["otari-lite-turbo", "gemma-7b", "grok-3-mini", "mixtral-8x7b", "gpt-4o", "llama-3-70b", "otari-neural-code", "claude-3-7-sonnet", "grok-3-pro", "otari-flagship-ultra"]
 
 
 def _tier_label(model_id: str) -> str:
-    order = {"gemma-7b": "Low Model", "mixtral-8x7b": "Medium Model", "llama-3-70b": "High Model"}
+    order = {
+        "otari-lite-turbo": "Low Model",
+        "gemma-7b": "Low Model",
+        "grok-3-mini": "Medium Model",
+        "mixtral-8x7b": "Medium Model",
+        "llama-3-70b": "High Model",
+        "otari-neural-code": "High Model",
+        "gpt-4o": "High Model",
+        "otari-flagship-ultra": "Premium Model",
+        "grok-3-pro": "Premium Model",
+        "claude-3-7-sonnet": "Premium Model",
+    }
     return order.get(model_id, settings.model_profile(model_id)["label"])
 
 
